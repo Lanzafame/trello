@@ -9,89 +9,138 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 )
 
-const trelloEndpoint = "https://api.trello.com/1"
+const (
+	trelloEndpoint = "https://api.trello.com/1"
+	jbt            = "application/json; charset=utf-8"
+)
 
 // A Client represents a Trello client.
 type Client struct {
 	key   string
 	token string
 
-	httpcli *http.Client
+	*http.Client
 }
 
 // NewClient returns a Trello client.
 func NewClient(key, token string) *Client {
-	cli := &Client{
-		key:     key,
-		token:   token,
-		httpcli: &http.Client{},
+	c := &Client{
+		key:   key,
+		token: token,
+		&http.Client{},
 	}
-	return cli
+	return c
 }
 
-func (cli *Client) get(url string) ([]byte, error) {
-	return cli.do("GET", url, nil)
-}
-
-func (cli *Client) post(url string, body io.Reader) ([]byte, error) {
-	return cli.do("POST", url, body)
-}
-
-func (cli *Client) do(method, urlStr string, body io.Reader) ([]byte, error) {
-	url, err := url.Parse(urlStr)
+func (c *Client) Get(url string) (*http.Response, error) {
+	url = c.mustAppendKeyToken(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	return c.Do(req)
+}
+
+func (c *Client) Post(url string, body io.Reader) (*http.Response, error) {
+	url = c.mustAppendKeyToken(url)
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", jbt)
+	return c.Do(req)
+}
+
+func (c *Client) Put(url string, body io.Reader) (*http.Response, error) {
+	url = c.mustAppendKeyToken(url)
+	req, err := http.NewRequest(http.MethodPut, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", jbt)
+	return c.Do(req)
+}
+
+func (c *Client) Delete(url string, body io.Reader) (*http.Response, error) {
+	url = c.mustAppendKeyToken(url)
+	req, err := http.NewRequest(http.MethodDelete, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", jbt)
+	return c.Do(req)
+}
+
+func (c *Client) appendKeyToken(rawurl string) (string, error) {
+	url, err := url.Parse(rawurl)
+	if err != nil {
+		return "", err
 	}
 
 	params := url.Query()
-	params.Add("key", cli.key)
-	params.Add("token", cli.token)
+	params.Add("key", c.key)
+	params.Add("token", c.token)
 	url.RawQuery = params.Encode()
 
-	req, err := http.NewRequest(method, url.String(), body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Add("Content-Type", "application/json")
+	return url.String(), nil
+}
 
-	resp, err := cli.httpcli.Do(req)
+func (c *Client) mustAppendKeyToken(rawurl string) string {
+	url, err := c.appendKeyToken(rawurl)
+	if err != nil {
+		panic(err)
+	}
+	return url
+}
+
+func (c *Client) Boards(username string) ([]Board, error) {
+	url := fmt.Sprintf("%v/members/%v/boards", trelloEndpoint, username)
+	resp, err := c.boardEndpoint(url, http.MethodGet, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	boards := []Board{}
+	if err = json.Unmarshal(resp.Body, &boards); err != nil {
+		return nil, err
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("invalid status code (%v)", resp.StatusCode)
-	}
-
-	return ioutil.ReadAll(resp.Body)
-}
-
-// Boards returns the boards owned by the given user.
-func (cli *Client) Boards(username string) ([]Board, error) {
-	url := fmt.Sprintf("%v/members/%v/boards", trelloEndpoint, username)
-	body, err := cli.get(url)
-	if err != nil {
-		return nil, err
-	}
-
-	boards := []Board{}
-	if err := json.Unmarshal(body, &boards); err != nil {
-		return nil, err
 	}
 
 	return boards, nil
 }
 
+func (c *Client) boardEndpoint(url, httpMethod string, body io.Reader) (*http.Response, error) {
+	var err error
+	var resp *http.Response
+	switch httpMethod {
+	case "GET":
+		resp, err = c.Get(url)
+	case "POST":
+		resp, err = c.Post(url, body)
+	case "PUT":
+		resp, err = c.Put(url, body)
+	case "DELETE":
+		resp, err = c.Delete(url, body)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
+}
+
 // Lists returns the lists under the given board.
-func (cli *Client) Lists(boardID string) ([]List, error) {
+func (c *Client) Lists(boardID string) ([]List, error) {
 	url := fmt.Sprintf("%v/boards/%v/lists", trelloEndpoint, boardID)
-	body, err := cli.get(url)
+	body, err := c.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -105,9 +154,9 @@ func (cli *Client) Lists(boardID string) ([]List, error) {
 }
 
 // Labels returns the labels under the given board.
-func (cli *Client) Labels(boardID string) ([]Label, error) {
+func (c *Client) Labels(boardID string) ([]Label, error) {
 	url := fmt.Sprintf("%v/boards/%v/labels", trelloEndpoint, boardID)
-	body, err := cli.get(url)
+	body, err := c.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +170,7 @@ func (cli *Client) Labels(boardID string) ([]Label, error) {
 }
 
 // PushCard creates a new card in trello.
-func (cli *Client) PushCard(card Card) error {
+func (c *Client) PushCard(card Card) error {
 	url := fmt.Sprintf("%v/cards", trelloEndpoint)
 
 	buf := &bytes.Buffer{}
@@ -129,7 +178,7 @@ func (cli *Client) PushCard(card Card) error {
 		return err
 	}
 
-	if _, err := cli.post(url, buf); err != nil {
+	if _, err := c.Post(url, buf); err != nil {
 		return err
 	}
 
